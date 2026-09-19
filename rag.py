@@ -1,7 +1,7 @@
 from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough, RunnableWithMessageHistory, RunnableLambda
-from file_history_store import get_history
+from file_history_store import FileChatMessageHistory
 from vector_stores import VectorStoreService
 from langchain_community.embeddings import DashScopeEmbeddings
 import config_data as config
@@ -36,8 +36,42 @@ class RagService(object):
 
         self.chat_model = ChatTongyi(model=config.chat_model_name)
 
+        # 专门用于压缩历史摘要的模型：不参与对话，只做"旧对话 -> 摘要"这一步
+        self.summary_model = ChatTongyi(model=config.memory_summary_model)
+        self.summary_prompt = ChatPromptTemplate.from_template(config.memory_summary_prompt)
+
         self.chain = self.__get_chain()
 
+    # ==================== 对话记忆（分层） ====================
+    def _summarize_history(self, previous_summary: str, dialogue: str) -> str:
+        """把「已有摘要 + 一批更早的对话」合并压缩成新的摘要。"""
+        summary_chain = self.summary_prompt | self.summary_model | StrOutputParser()
+        return summary_chain.invoke({
+            "previous_summary": previous_summary.strip() or "（暂无）",
+            "dialogue": dialogue,
+        })
+
+    def _get_history(self, session_id: str) -> FileChatMessageHistory:
+        """框架工厂：每次调用返回一个带摘要能力的会话历史对象。
+
+        RunnableWithMessageHistory 会在每次 invoke 前后自动用它读写历史，
+        并把 messages 属性（摘要 + 最近若干条原文）注入 prompt 的 history 占位符。
+        """
+        return FileChatMessageHistory(
+            session_id,
+            storage_path=config.chat_history_dir,
+            recent_messages=config.memory_recent_messages,
+            summary_trigger=config.memory_summary_trigger,
+            summarizer=self._summarize_history,
+        )
+
+    def memory_stats(self, session_id: str) -> dict:
+        """读取某个会话的分层记忆状态，供页面展示。"""
+        return FileChatMessageHistory(
+            session_id, storage_path=config.chat_history_dir
+        ).stats()
+
+    # ==================== 检索问答链 ====================
     def __get_chain(self):
         """获取最终的执行链"""
 
@@ -75,7 +109,7 @@ class RagService(object):
 
         conversation_chain = RunnableWithMessageHistory(       # 增强的链
             chain,
-            get_history,
+            self._get_history,
             input_messages_key="input",
             history_messages_key="history",
         )
@@ -92,4 +126,3 @@ if __name__ == '__main__':
     }
     res = RagService().chain.invoke({"input":"我之前问了什么"},session_config)
     print(res)
-
