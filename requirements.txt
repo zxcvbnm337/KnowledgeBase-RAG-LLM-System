@@ -1,26 +1,25 @@
 # ===================== 核心必装依赖（项目运行必须） =====================
 # WEB界面核心：Streamlit（含聊天UI、文件上传、会话状态组件）
-streamlit>=1.35.0,<1.40.0
+streamlit>=1.40.0,<2.0.0
 # Streamlit文件上传功能配套依赖
 python-multipart>=0.0.9
 
 # ===================== RAG核心框架：LangChain全量兼容包 =====================
-# LangChain主框架
-langchain>=0.1.20,<0.2.0
-# LangChain核心底层组件（链结构、消息体、运行时调度）
-langchain-core>=0.1.52,<0.2.0
-# LangChain社区集成组件（通义千问大模型、嵌入模型封装）
-langchain-community>=0.0.38,<0.1.0
-# LangChain与Chroma向量库的专用集成包
-langchain-chroma>=0.1.2
-# LangChain文本分割器独立包（RecursiveCharacterTextSplitter依赖）
-langchain-text-splitters>=0.0.2
+# 说明：以下版本区间相对早期锁定值做了整体上移，原因是原区间
+#      （langchain<0.2 / chromadb<0.5 / numpy<2.0）在 Python 3.13 上
+#      没有可用的预编译 wheel，numpy 1.x 最高仅支持到 Python 3.12。
+#      上移后同时兼容 Python 3.10 ~ 3.13。
+langchain>=0.3.0,<0.4.0
+langchain-core>=0.3.0,<0.4.0
+langchain-community>=0.3.0,<0.4.0
+langchain-chroma>=0.2.0,<0.3.0
+langchain-text-splitters>=0.3.0,<0.4.0
 
 # ===================== 向量数据库与数值计算 =====================
 # Chroma本地持久化向量数据库
-chromadb>=0.4.24,<0.5.0
-# 向量计算、数值处理基础依赖（锁定兼容版本，避免2.0+兼容性问题）
-numpy>=1.24.0,<2.0.0
+chromadb>=1.0.0,<1.1.0
+# 向量计算、数值处理基础依赖（放宽下界以支持 Python 3.13）
+numpy>=1.26.0
 
 # ===================== 阿里云通义千问SDK与网络依赖 =====================
 # 阿里云DashScope官方SDK（通义千问qwen3-max、text-embedding-v4嵌入模型）
