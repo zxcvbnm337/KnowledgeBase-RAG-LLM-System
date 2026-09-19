@@ -1,4 +1,10 @@
+import os
+
 import streamlit as  st
+from dotenv import load_dotenv
+
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))  # 读取项目根目录 .env 中的 DASHSCOPE_API_KEY
+
 from rag import RagService
 import config_data as config
 import time
@@ -13,6 +19,9 @@ if "message" not in st.session_state:
     st.session_state["message"]=[{"role":"assistant","content":"你好，有什么可以帮助你？"}]
 
 if "rag" not in st.session_state:
+    if not os.getenv("DASHSCOPE_API_KEY"):
+        st.error("未检测到 DASHSCOPE_API_KEY。请复制 .env.example 为 .env，填入你的百炼 Key 后刷新页面。")
+        st.stop()
     st.session_state["rag"]= RagService()
 #循环 输出历史信息，原本只记录但页面不显示
 for message in st.session_state["message"]:

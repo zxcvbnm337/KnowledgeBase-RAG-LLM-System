@@ -3,9 +3,13 @@
 
 Streamlit ： 当WEB页面元素变化，则代码重新执行一遍，无法维护状态
 """
+import os
+
 import streamlit as st
 import time
+from dotenv import load_dotenv
 
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))  # 读取项目根目录 .env 中的 DASHSCOPE_API_KEY
 
 from knowledge_base import KnowledgeBaseService
 
@@ -21,6 +25,9 @@ uploader_file=st.file_uploader(
 )
 
 if "service" not in st.session_state:          # 会话状态字典，session_state本身也是字典
+    if not os.getenv("DASHSCOPE_API_KEY"):
+        st.error("未检测到 DASHSCOPE_API_KEY。请复制 .env.example 为 .env，填入你的百炼 Key 后刷新页面。")
+        st.stop()
     st.session_state["service"]=KnowledgeBaseService()
 # count=0
 if uploader_file is not None:
