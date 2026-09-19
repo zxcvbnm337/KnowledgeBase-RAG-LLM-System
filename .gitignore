@@ -10,6 +10,16 @@ vector_db/
 chat_history/
 data/
 
+# 运行期产物（代码实际用的目录/文件名）
+chroma_db/
+md5.text
+
+# 环境变量与密钥 —— 切勿提交
+.env
+.env.local
+.env.*
+!.env.example
+
 .idea/
 .vscode/
 .DS_Store
