@@ -60,8 +60,12 @@ class KnowledgeBaseService(object):
             length_function=len,                      # 使用python自带的len函数做长度统计的依赖
         )      # 文本分割器的对象
 
-    def upload_by_str(self,data:str,filename):
-        """将传入的字符串，进行向量化，存入向量数据库中"""
+    def upload_by_str(self,data:str,filename,extra_metadata:dict=None):
+        """将传入的字符串，进行向量化，存入向量数据库中
+
+        :param extra_metadata: 解析阶段得到的附加元数据（文档类型、页数、工作表等），
+            会与基础元数据合并后一并入库，方便后续按来源过滤或排查召回质量。
+        """
         # 先得到出传入的字符串的md5值
         md5_hex=get_string_md5(data)
         if check_md5(md5_hex):
@@ -77,15 +81,19 @@ class KnowledgeBaseService(object):
             "create_time":datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "operator":"客户",
         }
+        if extra_metadata:
+            # 过滤掉 None，避免把空值写进向量库元数据
+            metadata.update({k: v for k, v in extra_metadata.items() if v is not None})
 
         self.chroma.add_texts(        # 内容加载到向量库中
             # iterable-> list \tuple
             knowledge_chunks,
-            metadata=[metadata for _ in knowledge_chunks],
+            # 每个 chunk 一份独立副本：共用同一个 dict 会被底层写入行为波及
+            metadata=[dict(metadata) for _ in knowledge_chunks],
 
         )
         save_md5(md5_hex)
-        return "[Success]内容已经成功载入向量库"
+        return f"[Success]内容已经成功载入向量库（{len(knowledge_chunks)} 个片段）"
 
 if __name__ =='__main__':
     # r1 = get_string_md5("周杰伦")
