@@ -1,19 +1,25 @@
-from langchain_core.documents import Document
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.runnables import RunnablePassthrough, RunnableWithMessageHistory, RunnableLambda
-from file_history_store import FileChatMessageHistory
-from vector_stores import VectorStoreService
-from langchain_community.embeddings import DashScopeEmbeddings
-import config_data as config
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from __future__ import annotations
+
+from typing import Iterator, Optional
+
 from langchain_community.chat_models.tongyi import ChatTongyi
+from langchain_community.embeddings import DashScopeEmbeddings
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.runnables import RunnableWithMessageHistory
+
+import config_data as config
+from file_history_store import FileChatMessageHistory
+from retrieval import DashScopeReranker, RetrievalOutcome, RetrievalPipeline
+from vector_stores import VectorStoreService
 
 
 def print_prompt(prompt):
-    print("="*20)
+    if not config.debug_print_prompt:
+        return prompt
+    print("=" * 20)
     print(prompt.to_string())
-    print("="*20)
-
+    print("=" * 20)
     return prompt
 
 
@@ -23,6 +29,24 @@ class RagService(object):
         self.vector_service = VectorStoreService(
             embedding=DashScopeEmbeddings(model=config.embedding_model_name)
         )
+
+        # 检索链路：向量召回 → 交叉编码重排 → 阈值门控（见 retrieval.py）
+        # 关闭重排时传 None，管线会自动改用向量相似度阈值判定。
+        self.pipeline = RetrievalPipeline(
+            search_fn=self.vector_service.search_with_scores,
+            reranker=DashScopeReranker(model=config.rerank_model) if config.enable_rerank else None,
+            top_k=config.retrieval_top_k,
+            final_k=config.retrieval_final_k,
+            rerank_threshold=config.rerank_threshold,
+            vector_similarity_threshold=config.vector_similarity_threshold,
+            refusal_text=config.refusal_text,
+        )
+
+        # 最近一次检索的中间状态，供页面展示（可观测性）
+        self.last_retrieval: Optional[RetrievalOutcome] = None
+
+        # 检索不命中时的统一答复文案
+        self.refusal_text = config.refusal_text
 
         self.prompt_template = ChatPromptTemplate.from_messages(
             [
@@ -73,38 +97,17 @@ class RagService(object):
 
     # ==================== 检索问答链 ====================
     def __get_chain(self):
-        """获取最终的执行链"""
+        """获取最终的执行链。
 
-        retriever = self.vector_service.get_retriever()
-
-        def format_document(docs: list[Document]):
-            if not docs:
-                return "无相关参考资料"
-
-            formatted_str = ""
-            for doc in docs:
-                formatted_str += f"文档片段：{doc.page_content}\n文档元数据：{doc.metadata}\n\n"
-
-            return formatted_str
-
-        def format_for_retriever(value: dict)->str:
-
-            return value["input"]
-
-        def format_for_prompt_template(value):
-            # {input, context, history}
-            new_value = {}
-            new_value["input"] = value["input"]["input"]
-            new_value["context"] = value["context"]
-            new_value["history"] = value["input"]["history"]
-            return new_value
-
-
+        参考资料（context）由 `answer()` / `stream()` 在链外检索后注入，
+        而不是在链内用 retriever 拉取——这样「检索不命中就直接拒答」
+        才能在调用大模型之前短路。
+        """
         chain = (
-            {
-                "input": RunnablePassthrough(),
-                "context": RunnableLambda(format_for_retriever) | retriever | format_document
-            }| RunnableLambda(format_for_prompt_template) |self.prompt_template | print_prompt |self.chat_model | StrOutputParser()
+            self.prompt_template
+            | print_prompt
+            | self.chat_model
+            | StrOutputParser()
         )
 
         conversation_chain = RunnableWithMessageHistory(       # 增强的链
@@ -116,13 +119,48 @@ class RagService(object):
 
         return conversation_chain
 
+    # ==================== 对外问答接口（带门控） ====================
+    def retrieve(self, question: str) -> RetrievalOutcome:
+        """执行一次完整检索，并把中间状态留档供页面展示。"""
+        outcome = self.pipeline.retrieve(question)
+        self.last_retrieval = outcome
+        return outcome
+
+    def _should_refuse(self, outcome: RetrievalOutcome) -> bool:
+        return bool(outcome.refused and config.refusal_short_circuit)
+
+    def answer(self, question: str, session_config: dict = None) -> str:
+        """非流式问答。检索不命中时直接返回拒答文案，不调用大模型。"""
+        outcome = self.retrieve(question)
+        if self._should_refuse(outcome):
+            # 刻意不写入对话历史：拒答既不含知识、也会污染后续的摘要压缩
+            return self.refusal_text
+        return self.chain.invoke(
+            {"input": question, "context": outcome.context_text()},
+            session_config or config.session_config,
+        )
+
+    def stream(self, question: str, session_config: dict = None) -> Iterator[str]:
+        """流式问答。拒答场景下同样以流的形式吐出文案，前端无需特殊分支。"""
+        outcome = self.retrieve(question)
+        if self._should_refuse(outcome):
+            yield self.refusal_text
+            return
+        yield from self.chain.stream(
+            {"input": question, "context": outcome.context_text()},
+            session_config or config.session_config,
+        )
+
 
 if __name__ == '__main__':
-    # session id 配置
-    session_config ={
-        "configurable":{
-            "session_id":"user_001",
-        }
-    }
-    res = RagService().chain.invoke({"input":"我之前问了什么"},session_config)
-    print(res)
+    service = RagService()
+
+    # 库内问题：应命中并正常回答
+    print("--- 库内问题 ---")
+    print(service.answer("我之前问了什么"))
+    print(service.last_retrieval.debug)
+
+    # 库外问题：应被阈值门控拦下
+    print("--- 库外问题 ---")
+    print(service.answer("今天北京的天气怎么样"))
+    print(service.last_retrieval.debug)
